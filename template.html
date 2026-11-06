@@ -34,6 +34,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* display: flex/grid 를 준 요소도 hidden 속성으로 확실히 숨긴다 */
 body {
   margin: 0; background: var(--bg); color: var(--ink);
   font: 15px/1.55 var(--body); -webkit-font-smoothing: antialiased;
@@ -54,6 +55,24 @@ h1 small { display: block; font: 500 .78rem/1.4 var(--body); color: var(--muted)
 .toggle { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 5px 12px; font: 500 .85rem var(--body); cursor: pointer; }
 .toggle[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 :is(button, a, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 식당 탭 (판교세븐 / 그린쿡 · 런치스토리) */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tab {
+  border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 999px;
+  padding: 7px 16px; font: 500 .92rem var(--body); cursor: pointer;
+}
+.tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 600; }
+
+/* 카카오 채널 이미지 카드 */
+.kakao { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; align-items: start; }
+.kcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px 16px; display: grid; gap: 10px; min-width: 0; }
+.kcard-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.kcard-head h2 { margin: 0; font: 400 1.45rem/1 var(--display); }
+.kcard-head a { margin-left: auto; font-size: .82rem; color: var(--accent); white-space: nowrap; }
+.kcard img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); }
+.kcard .caption { margin: 0; color: var(--muted); font-size: .88rem; white-space: pre-line; word-break: keep-all; }
+.kcard .closed-card { padding: 28px 14px; }
 
 /* 요일 스트립 */
 .days { display: grid; grid-template-columns: repeat(var(--n, 5), minmax(0, 1fr)); gap: 6px; }
@@ -137,8 +156,12 @@ footer a { color: var(--accent); }
 </style>
 
 <div class="wrap">
+  <nav class="tabs" role="tablist" aria-label="식당">
+    <button class="tab" role="tab" data-tab="pvv" aria-selected="true">판교세븐</button>
+    <button class="tab" role="tab" data-tab="kakao" aria-selected="false">그린쿡 · 런치스토리</button>
+  </nav>
   <header>
-    <h1><small>판교세븐벤처밸리 1단지</small>구내식당 식단</h1>
+    <h1><small>판교세븐벤처밸리 1단지</small><span id="title">구내식당 식단</span></h1>
     <div class="weeknav">
       <button class="iconbtn" id="prevWeek" aria-label="지난주">‹</button>
       <b id="weekLabel"></b>
@@ -150,6 +173,7 @@ footer a { color: var(--accent); }
   <div class="stale" id="stale" role="status" hidden></div>
   <nav class="days" id="days" role="tablist" aria-label="요일"></nav>
   <main id="view"></main>
+  <section id="kakaoView" class="kakao" aria-label="그린쿡 · 런치스토리 오늘 메뉴" hidden></section>
 
   <footer>
     <div id="extras"></div>
@@ -198,7 +222,11 @@ function pickStart() {
   return { w, d };
 }
 
-const state = { ...pickStart(), view: store.get("pvv.view") === "week" ? "week" : "day" };
+const state = {
+  ...pickStart(),
+  view: store.get("pvv.view") === "week" ? "week" : "day",
+  tab: store.get("pvv.tab") === "kakao" ? "kakao" : "pvv",
+};
 
 function mealStatus(day, meal) {
   if (meal.closed || !meal.time || day.date !== today) return null;
@@ -303,13 +331,53 @@ function renderFooter() {
   const src = wk.source || {};
   $("#meta").innerHTML = `
     <span>게시 ${esc(src.posted || "-")}</span>
-    <span>마지막 확인 ${esc((DATA.generated || "").slice(0, 16).replace("T", " "))} (한국 시간)</span>
+    ${checkedAt()}
     ${src.pdf ? `<a href="${esc(src.pdf)}" target="_blank" rel="noopener">원본 PDF</a>` : ""}
     <a href="${esc(DATA.list)}" target="_blank" rel="noopener">식단표 게시판</a>`;
 }
 
+const checkedAt = () => `<span>마지막 확인 ${esc((DATA?.generated || "").slice(0, 16).replace("T", " "))} (한국 시간)</span>`;
+const mdLabel = (isoDate) => { const [, m, d] = isoDate.split("-").map(Number); return `${m}/${d}`; };
+
+// 카카오 채널(그린쿡·런치스토리): 빌드 때 받아 둔 최신 글의 이미지를 카카오 CDN 링크 그대로 보여준다.
+function renderKakao() {
+  const list = DATA?.kakao || [];
+  if (!list.length) return `<div class="closed-card"><strong>채널 정보를 불러오지 못했습니다</strong></div>`;
+  return list.map((k) => {
+    const head = `<div class="kcard-head"><h2>${esc(k.name)}</h2>
+      ${k.posted ? `<span class="time">${esc(k.posted.slice(5, 16).replace("T", " "))} 게시</span>` : ""}
+      <a href="${esc(k.link || k.channel)}" target="_blank" rel="noopener">카카오 채널</a></div>`;
+    if (k.error || !k.image) {
+      return `<section class="kcard">${head}<div class="closed-card"><strong>불러오지 못했어요</strong><span>채널에서 직접 확인해 주세요.</span></div></section>`;
+    }
+    const stale = k.date && k.date < today
+      ? `<div class="stale" role="status"><b>${mdLabel(k.date)}에 올라온 메뉴예요.</b> 오늘 메뉴가 아직 게시되지 않았거나 자동 갱신이 지연되고 있어요.</div>` : "";
+    const size = k.width && k.height ? `width="${k.width}" height="${k.height}"` : "";
+    return `<section class="kcard">${head}${stale}
+      <a href="${esc(k.image)}" target="_blank" rel="noopener"><img src="${esc(k.image)}" ${size} alt="${esc(k.name)} ${k.date ? mdLabel(k.date) : ""} 메뉴" loading="lazy" decoding="async"></a>
+      ${k.text ? `<p class="caption">${esc(k.text)}</p>` : ""}
+    </section>`;
+  }).join("");
+}
+
+function renderKakaoMeta() {
+  const links = (DATA?.kakao || []).map((k) => `<a href="${esc(k.channel)}" target="_blank" rel="noopener">${esc(k.name)} 채널</a>`).join("");
+  $("#meta").innerHTML = `${checkedAt()}${links}`;
+}
+
 function render() {
-  if (!weeks.length) { $("#view").innerHTML = `<div class="closed-card"><strong>식단표를 불러오지 못했습니다</strong></div>`; return; }
+  const kakao = state.tab === "kakao";
+  document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
+  $("#title").textContent = kakao ? "그린쿡 · 런치스토리" : "구내식당 식단";
+  $(".weeknav").hidden = kakao;
+  $("#kakaoView").hidden = !kakao;
+  $("#view").hidden = kakao;
+  $("#days").hidden = kakao;
+  $("#stale").hidden = true;
+  $("#extras").hidden = kakao;
+  $("#notesBox").hidden = true;
+  if (kakao) { $("#kakaoView").innerHTML = renderKakao(); renderKakaoMeta(); return; }
+  if (!weeks.length) { $("#view").innerHTML = `<div class="closed-card"><strong>식단표를 불러오지 못했습니다</strong></div>`; $("#meta").innerHTML = checkedAt(); return; }
   const wk = weeks[state.w];
   $("#weekLabel").textContent = (wk.title || "").replace(/\)?\s*주간메뉴안내/, "").trim() || `${wk.days[0].label} 주`;
   $("#prevWeek").disabled = state.w <= 0;
@@ -341,8 +409,11 @@ $("#days").addEventListener("click", (e) => {
 $("#prevWeek").onclick = () => { state.w--; state.d = 0; render(); };
 $("#nextWeek").onclick = () => { state.w++; state.d = 0; render(); };
 $("#viewToggle").onclick = () => { state.view = state.view === "week" ? "day" : "week"; store.set("pvv.view", state.view); render(); };
+document.querySelectorAll(".tab").forEach((b) => {
+  b.onclick = () => { state.tab = b.dataset.tab; store.set("pvv.tab", state.tab); render(); };
+});
 document.addEventListener("keydown", (e) => {
-  if (state.view !== "day" || e.target.closest("input, textarea")) return;
+  if (state.tab !== "pvv" || state.view !== "day" || e.target.closest("input, textarea")) return;
   const n = weeks[state.w]?.days.length || 0;
   if (e.key === "ArrowRight" && state.d < n - 1) { state.d++; render(); $("#day-" + state.d)?.focus(); }
   if (e.key === "ArrowLeft" && state.d > 0) { state.d--; render(); $("#day-" + state.d)?.focus(); }

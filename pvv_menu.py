@@ -23,6 +23,14 @@ import fitz  # PyMuPDF
 BASE = "http://www.pvv.co.kr/bbs/"
 LIST_URL = BASE + "index.php?page=1&code=bbs_menu01"
 HERE = Path(__file__).resolve().parent
+KST = dt.timezone(dt.timedelta(hours=9))
+
+# 카카오톡 채널 식당. 채널 게시글의 이미지를 그대로 보여준다 (파싱 없음).
+KAKAO = [
+    {"key": "greencook", "name": "그린쿡", "profile": "_yxgQDb"},
+    {"key": "lunchstory", "name": "런치스토리", "profile": "_Fwpwn"},
+]
+KAKAO_API = "https://pf.kakao.com/rocket-web/web/v2/profiles/{}/posts?includePinnedPost=true"
 
 MEAL_RE = re.compile(r"^[조중석]\s*식$")
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
@@ -267,6 +275,35 @@ def fetch_pdf(post):
     return data
 
 
+def fetch_kakao(ch: dict) -> dict:
+    """카카오 채널의 이미지가 있는 최신 글 1건. 실패해도 예외를 올리지 않고 error 로 알린다.
+
+    채널 하나가 막혀도 판교세븐 식단 배포는 계속되어야 하므로 여기서 삼킨다.
+    """
+    info = {"key": ch["key"], "name": ch["name"], "channel": f"https://pf.kakao.com/{ch['profile']}"}
+    try:
+        data = json.loads(fetch(KAKAO_API.format(ch["profile"])).decode("utf-8"))
+        posts = []
+        for it in data.get("items", []):
+            if it.get("pinned") or it.get("status", "published") != "published":
+                continue
+            imgs = [m for m in it.get("media") or [] if m.get("type") == "image" and m.get("large_url")]
+            if imgs:
+                posts.append((it.get("published_at") or 0, it, imgs[0]))
+        if not posts:
+            raise ValueError("이미지가 있는 글이 없습니다")
+        ts, post, img = max(posts, key=lambda p: p[0])
+        when = dt.datetime.fromtimestamp(ts / 1000, KST)
+        text = "\n".join(c["v"].strip() for c in post.get("contents") or [] if c.get("t") == "text" and c.get("v", "").strip())
+        info.update(posted=when.isoformat(timespec="minutes"), date=when.date().isoformat(),
+                    image=img["large_url"], width=img.get("width"), height=img.get("height"),
+                    text=text, link=post.get("permalink") or info["channel"])
+    except Exception as e:                            # 네트워크, JSON 구조 변경 등
+        info["error"] = f"{type(e).__name__}: {e}"
+        _log(f"카카오 {ch['name']} 실패 {e!r}")
+    return info
+
+
 def build(out_dir: Path, weeks: int = 2):
     posts = list_posts()
     if not posts:
@@ -292,7 +329,8 @@ def build(out_dir: Path, weeks: int = 2):
         if len(result) >= weeks:
             break
 
-    payload = {"generated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).isoformat(timespec="minutes"), "weeks": result, "list": LIST_URL}
+    payload = {"generated": dt.datetime.now(KST).isoformat(timespec="minutes"), "weeks": result, "list": LIST_URL,
+               "kakao": [fetch_kakao(ch) for ch in KAKAO]}
     out_dir.mkdir(parents=True, exist_ok=True)
     _write(out_dir / "menu.json", json.dumps(payload, ensure_ascii=False, indent=1))
     tpl = (HERE / "template.html").read_text(encoding="utf-8")
